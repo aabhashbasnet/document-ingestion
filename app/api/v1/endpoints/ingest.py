@@ -1,18 +1,22 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 import uuid
-from typing import List
 
 from app.models.schemas import IngestionResponse
 from app.services.document_processor import process_document
-from app.services.vector_store import (
-    add_documents_to_vector_store,
-)  # import your helper
+from app.services.vector_store import add_documents_to_vector_store
 
 router = APIRouter()
 
 
 @router.post("/ingest", response_model=IngestionResponse)
-async def ingest_document(file: UploadFile = File(...)):
+async def ingest_document(
+    file: UploadFile = File(...),
+    chunking_strategy: str = Query(
+        "recursive",
+        enum=["recursive", "fixed"],
+        description="Chunking strategy to use",
+    ),
+):
     allowed_extensions = {".pdf", ".docx", ".doc", ".txt", ".md"}
     file_ext = (
         "." + file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
@@ -25,28 +29,30 @@ async def ingest_document(file: UploadFile = File(...)):
         )
 
     try:
-        # Generate a unique document ID
         document_id = str(uuid.uuid4())
 
-        # Process the file → extract text & create chunks
-        chunks = await process_document(file, document_id=document_id)
+        chunks = await process_document(
+            file,
+            document_id=document_id,
+            chunking_strategy=chunking_strategy,
+        )
 
         if not chunks:
             raise HTTPException(
                 status_code=400, detail="No text found in the document."
             )
 
-        # Add chunks to Chroma vector store
         add_documents_to_vector_store(chunks)
-
-        chunks_count = len(chunks)
 
         return IngestionResponse(
             document_id=document_id,
-            chunks_count=chunks_count,
+            chunks_count=len(chunks),
             status="success",
-            message=f"Document processed and stored in vector DB. Created {chunks_count} chunks from {file.filename}",
+            message=(
+                f"Document processed using '{chunking_strategy}' chunking. "
+                f"Created {len(chunks)} chunks."
+            ),
         )
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
